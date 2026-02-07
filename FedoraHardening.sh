@@ -6,7 +6,7 @@
 
 set -e
 
-USERNAME="secureuser"        # <<< CHANGE THIS
+USERNAME="sysadmin"        # <<< CHANGE THIS
 SSH_PORT="22"
 BACKUP_DIR="/root/backups"
 CRON_TIME="0 2 * * *"        # Daily at 2 AM
