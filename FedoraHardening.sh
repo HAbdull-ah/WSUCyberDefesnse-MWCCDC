@@ -17,7 +17,7 @@ echo "[*] Starting system hardening..."
 # 1. System Updates
 # ------------------------------------------------------------
 echo "[*] Updating system..."
-yum update -y
+dnf5 update -y
 
 # ------------------------------------------------------------
 # 2. User & Sudo Setup
@@ -72,8 +72,8 @@ firewall-cmd --reload
 # 7. Fail2ban Setup
 # ------------------------------------------------------------
 echo "[*] Installing Fail2ban"
-yum install -y epel-release
-yum install -y fail2ban
+dnf5 install -y epel-release
+dnf5 install -y fail2ban
 
 echo "[*] Configuring Fail2ban SSH jail"
 
@@ -102,7 +102,7 @@ done
 # 9. Logging & Auditing
 # ------------------------------------------------------------
 echo "[*] Installing auditd"
-yum install -y audit
+dnf5 install -y audit
 systemctl enable --now auditd
 
 # ------------------------------------------------------------
