@@ -1,0 +1,202 @@
+#!/bin/bash
+# ============================================================
+# === MWCCDC ECOM — MASTER IR DEPLOY (SSH SAFE) =============
+# ============================================================
+
+set +e
+umask 027
+
+IR=/root/IR
+mkdir -p "$IR"/{backups,evidence,log-snapshots,tmp}
+
+echo ""
+echo "============================================"
+echo " IR DEPLOY START — $(date)"
+echo "============================================"
+echo ""
+
+# ============================================================
+# === DISCOVER OPENCART ROOT ================================
+# ============================================================
+
+OC_CONFIG=$(find /var/www -type f -name "config.php" 2>/dev/null \
+  -exec grep -lE "DB_(DATABASE|USERNAME|PASSWORD)" {} \; \
+  | grep -vE "/admin/|phpmyadmin|myadm|pma" \
+  | head -1)
+
+if [ -n "$OC_CONFIG" ]; then
+  OC_ROOT=$(dirname "$OC_CONFIG")
+else
+  OC_ROOT="/var/www/html/opencart"
+fi
+
+echo "$OC_ROOT" > "$IR/opencart-root.txt"
+echo "OpenCart root: $OC_ROOT"
+
+# ============================================================
+# === SAFE DB CREDENTIAL PARSER =============================
+# ============================================================
+
+cat > "$IR/read-db.sh" <<'EOF'
+#!/bin/bash
+CFG="$1"
+DB_NAME=$(awk -F"'" '/DB_DATABASE/ {print $4; exit}' "$CFG")
+DB_USER=$(awk -F"'" '/DB_USERNAME/ {print $4; exit}' "$CFG")
+DB_PASS=$(awk -F"'" '/DB_PASSWORD/ {print $4; exit}' "$CFG")
+DB_HOST=$(awk -F"'" '/DB_HOSTNAME/ {print $4; exit}' "$CFG")
+[ -z "$DB_HOST" ] && DB_HOST="localhost"
+echo "DB_NAME=$DB_NAME"
+echo "DB_USER=$DB_USER"
+echo "DB_PASS=$DB_PASS"
+echo "DB_HOST=$DB_HOST"
+EOF
+chmod +x "$IR/read-db.sh"
+
+# ============================================================
+# === VALIDATION SCRIPT ======================================
+# ============================================================
+
+cat > "$IR/validate.sh" <<'EOF'
+#!/bin/bash
+IR=/root/IR
+OC_ROOT=$(cat "$IR/opencart-root.txt")
+
+echo ""
+echo "====== VALIDATION $(date) ======"
+
+echo "Apache:"
+systemctl is-active apache2
+
+echo "MySQL:"
+systemctl is-active mysql
+
+echo "HTTP:"
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost
+
+echo "Ports:"
+ss -tulnp | head -20
+
+echo "UID 0 Accounts:"
+awk -F: '($3==0){print $1}' /etc/passwd
+
+echo "Cron:"
+crontab -l 2>/dev/null
+
+echo "Recent Web Changes:"
+find /var/www -type f -mmin -15 2>/dev/null
+
+echo "Disk:"
+df -h | grep -E "/$|/var|/tmp"
+
+echo "====== DONE ======"
+EOF
+chmod +x "$IR/validate.sh"
+
+# ============================================================
+# === TTP SWEEP (PERFORMANCE SAFE) ===========================
+# ============================================================
+
+cat > "$IR/ttp-sweep.sh" <<'EOF'
+#!/bin/bash
+IR=/root/IR
+OC_ROOT=$(cat "$IR/opencart-root.txt")
+
+echo ""
+echo "====== TTP SWEEP $(date) ======"
+
+echo "Cron:"
+grep -vE "^(#|$)" /etc/crontab 2>/dev/null
+for f in /etc/cron.d/*; do
+  [ -f "$f" ] && echo "--- $f ---" && grep -vE "^(#|$)" "$f"
+done
+
+echo "SSH Keys:"
+find / -name authorized_keys -type f -maxdepth 6 2>/dev/null \
+  -exec echo "=== {} ===" \; -exec cat {} \;
+
+echo "Temp Executables:"
+find /tmp /dev/shm /var/tmp -type f -executable -ls 2>/dev/null | head -50
+
+echo "World Writable:"
+find /var/www -type f -perm -o+w -ls 2>/dev/null | head -50
+
+echo "SUID (limited paths):"
+find /bin /usr/bin /usr/sbin -perm -4000 -type f 2>/dev/null
+
+echo "Active Connections:"
+ss -tnp | grep -v LISTEN | head -20
+
+echo "====== DONE ======"
+EOF
+chmod +x "$IR/ttp-sweep.sh"
+
+# ============================================================
+# === LOG SNAPSHOT ===========================================
+# ============================================================
+
+cat > "$IR/log-snapshot.sh" <<'EOF'
+#!/bin/bash
+IR=/root/IR
+TS=$(date +%H%M%S)
+cp /var/log/auth.log "$IR/log-snapshots/auth-$TS.log" 2>/dev/null
+cp /var/log/syslog "$IR/log-snapshots/syslog-$TS.log" 2>/dev/null
+cp /var/log/apache2/access.log "$IR/log-snapshots/access-$TS.log" 2>/dev/null
+cp /var/log/apache2/error.log "$IR/log-snapshots/error-$TS.log" 2>/dev/null
+echo "Snapshot saved."
+EOF
+chmod +x "$IR/log-snapshot.sh"
+
+# ============================================================
+# === DISK WATCHDOG ==========================================
+# ============================================================
+
+cat > "$IR/disk-watchdog.sh" <<'EOF'
+#!/bin/bash
+THRESHOLD=85
+IR=/root/IR
+
+DISK=$(df / | tail -1 | awk '{print $5}' | tr -d '%')
+
+if [ "$DISK" -gt "$THRESHOLD" ]; then
+  echo "Disk critical — cleaning snapshots"
+  find "$IR/log-snapshots" -type f -mmin +120 -delete
+  journalctl --vacuum-size=100M 2>/dev/null
+fi
+EOF
+chmod +x "$IR/disk-watchdog.sh"
+
+# ============================================================
+# === CRON AUTOMATION (SAFE) =================================
+# ============================================================
+
+cat > /etc/cron.d/ir-automation <<'EOF'
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+*/15 * * * * root /root/IR/ttp-sweep.sh >> /root/IR/ttp-auto.log 2>&1
+*/5 * * * * root /root/IR/disk-watchdog.sh >> /root/IR/disk-auto.log 2>&1
+EOF
+
+chmod 644 /etc/cron.d/ir-automation
+
+# ============================================================
+# === IR TEMPLATE ============================================
+# ============================================================
+
+cat > "$IR/IR-TEMPLATE.txt" <<'EOF'
+INCIDENT RESPONSE REPORT
+DATE:
+SYSTEM:
+DESCRIPTION:
+EVIDENCE:
+ACTIONS:
+STATUS:
+EOF
+
+echo ""
+echo "============================================"
+echo " DEPLOY COMPLETE"
+echo " validate.sh  → /root/IR/validate.sh"
+echo " ttp-sweep.sh → /root/IR/ttp-sweep.sh"
+echo "============================================"
+echo ""
